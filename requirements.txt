@@ -3,3 +3,4 @@ uvicorn
 discord.py
 apscheduler
 pytz
+supabase
