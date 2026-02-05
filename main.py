@@ -45,12 +45,12 @@ def send_reminder():
         # Botのループを使ってメッセージを送る
         channel = bot.get_channel(CHANNEL_ID)
         if channel:
-            bot.loop.create_task(channel.send("【毎日リマインド】18:50になりました！"))
+            bot.loop.create_task(channel.send("クロス取引開始の時間です！🎉"))
 
 # --- スケジューラの設定 ---
 scheduler = BackgroundScheduler()
 # 毎日18:50に実行（Asia/Tokyoを指定）
-scheduler.add_job(send_reminder, 'cron', hour=0, minute=7, timezone='Asia/Tokyo')
+scheduler.add_job(send_reminder, 'cron', hour=18, minute=50, timezone='Asia/Tokyo')
 scheduler.start()
 
 # --- Discord スラッシュコマンド ---
@@ -63,6 +63,19 @@ async def remind_on(interaction: discord.Interaction):
 async def remind_off(interaction: discord.Interaction):
     set_status(False)
     await interaction.response.send_message("リマインドをOFFに設定しました！")
+
+@bot.tree.command(name="remind-status", description="現在のリマインド設定（ON/OFF）を確認します")
+async def remind_status(interaction: discord.Interaction):
+    is_on = get_status()
+    status_text = "【ON】（18:50に送信されます）" if is_on else "【OFF】（現在は停止中です）"
+    
+    # 埋め込みメッセージ（Embed）で見やすく表示
+    embed = discord.Embed(
+        title="リマインド設定確認",
+        description=f"現在の設定は **{status_text}** です。",
+        color=discord.Color.green() if is_on else discord.Color.red()
+    )
+    await interaction.response.send_message(embed=embed)
 
 @bot.event
 async def on_ready():
