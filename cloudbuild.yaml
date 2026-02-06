@@ -1,0 +1,44 @@
+# cloudbuild.yaml
+substitutions:
+  _REGION: "asia-northeast1"
+  _REPO: "reminder-cross-trading"
+  _SERVICE: "remind-sender"
+
+steps:
+  # 1) Build image from Dockerfile
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA"
+      - "."
+
+  # 2) Push image to Artifact Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA"
+
+  # 3) Deploy to Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "${_SERVICE}"
+      - "--image"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA"
+      - "--region"
+      - "${_REGION}"
+      - "--platform"
+      - "managed"
+      - "--no-allow-unauthenticated"
+      # ↓ 非機密だけ env に
+      - "--set-env-vars"
+      - "CHANNEL_ID=${_CHANNEL_ID},SUPABASE_URL=${_SUPABASE_URL}"
+      # ↓ 機密は Secret Manager 推奨（後述）
+      - "--set-secrets"
+      - "DISCORD_TOKEN=discord-token:latest,SUPABASE_SERVICE_ROLE_KEY=supabase-srkey:latest"
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA"
