@@ -1,101 +1,89 @@
+# main.py
 import os
-import asyncio
 from datetime import datetime
 import pytz
-from fastapi import FastAPI
-from discord.ext import commands
-import discord
-from apscheduler.schedulers.background import BackgroundScheduler
+import httpx
+from fastapi import FastAPI, HTTPException
 from supabase import create_client, Client
 
-# --- 設定エリア ---
-TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-
-# Supabaseの設定
+# ---- env ----
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# FastAPIの準備
+if not all([DISCORD_TOKEN, CHANNEL_ID, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY]):
+    raise RuntimeError("Missing env vars: DISCORD_TOKEN, CHANNEL_ID, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY")
+
+CHANNEL_ID = int(CHANNEL_ID)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
 app = FastAPI()
 
-# Discord Botの準備
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="/", intents=intents)
+JST = pytz.timezone("Asia/Tokyo")
 
-# --- Supabase 操作関数 ---
-def get_status():
-    """Supabaseから設定を読み込む"""
+def get_status() -> bool:
+    """Supabaseから is_on を取得（id=1）"""
     try:
-        response = supabase.table("bot_status").select("is_on").eq("id", 1).execute()
-        if response.data:
-            return response.data[0]["is_on"]
-        return True  # データがない場合はデフォルトON
+        resp = supabase.table("bot_status").select("is_on").eq("id", 1).execute()
+        if resp.data:
+            return bool(resp.data[0]["is_on"])
+        return True
     except Exception as e:
         print(f"Supabase Get Error: {e}")
         return True
 
-def set_status(is_on: bool):
-    """Supabaseへ設定を書き込む"""
+def get_last_sent_date() -> str | None:
+    """重複送信防止用（bot_status.last_sent_date を推奨）"""
     try:
-        # id=1のデータを更新。データがない場合は作成する
-        supabase.table("bot_status").upsert({"id": 1, "is_on": is_on}).execute()
+        resp = supabase.table("bot_status").select("last_sent_date").eq("id", 1).execute()
+        if resp.data:
+            return resp.data[0].get("last_sent_date")
+        return None
     except Exception as e:
-        print(f"Supabase Set Error: {e}")
+        print(f"Supabase Get last_sent_date Error: {e}")
+        return None
 
-# --- リマインド実行関数 ---
-def send_reminder():
-    if get_status():
-        channel = bot.get_channel(CHANNEL_ID)
-        if channel:
-            # 非同期でメッセージ送信
-            bot.loop.create_task(channel.send("クロス取引開始の時間です！🎉"))
-            print(f"Reminder sent at {datetime.now(pytz.timezone('Asia/Tokyo'))}")
+def set_last_sent_date(date_ymd: str) -> None:
+    try:
+        supabase.table("bot_status").upsert({"id": 1, "last_sent_date": date_ymd}).execute()
+    except Exception as e:
+        print(f"Supabase Set last_sent_date Error: {e}")
 
-# --- スケジューラの設定 ---
-scheduler = BackgroundScheduler()
-# 毎日18:50に実行（JST）
-scheduler.add_job(send_reminder, 'cron', hour=18, minute=50, timezone='Asia/Tokyo')
-scheduler.start()
+async def post_discord_message(content: str) -> None:
+    url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages"
+    headers = {
+        "Authorization": f"Bot {DISCORD_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(url, headers=headers, json={"content": content})
+        if r.status_code // 100 != 2:
+            raise HTTPException(status_code=502, detail=f"Discord API error {r.status_code}: {r.text}")
 
-# --- Discord スラッシュコマンド ---
-@bot.tree.command(name="remind-on", description="リマインドをONにします")
-async def remind_on(interaction: discord.Interaction):
-    set_status(True)
-    await interaction.response.send_message("リマインドをONに設定しました！")
-
-@bot.tree.command(name="remind-off", description="リマインドをOFFにします")
-async def remind_off(interaction: discord.Interaction):
-    set_status(False)
-    await interaction.response.send_message("リマインドをOFFに設定しました！")
-
-@bot.tree.command(name="remind-status", description="現在のリマインド設定を確認します")
-async def remind_status(interaction: discord.Interaction):
-    is_on = get_status()
-    status_text = "【ON】（18:50に送信されます）" if is_on else "【OFF】（現在は停止中です）"
-    
-    embed = discord.Embed(
-        title="リマインド設定確認",
-        description=f"現在の設定は **{status_text}** です。",
-        color=discord.Color.green() if is_on else discord.Color.red()
-    )
-    await interaction.response.send_message(embed=embed)
-
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    print(f"Logged in as {bot.user.name}")
-
-# --- Render 起こし用の窓口 ---
 @app.get("/")
 @app.head("/")
-def read_root():
+def health():
     return {"status": "active", "remind_on": get_status()}
 
-# --- Botの起動処理 ---
-@app.on_event("startup")
-async def startup_event():
-    # 起動時のIP制限を回避するため少し待機
-    await asyncio.sleep(5)
-    asyncio.create_task(bot.start(TOKEN))
+@app.post("/tick")
+async def tick():
+    """
+    Cloud Schedulerが叩くエンドポイント。
+    - SupabaseでONなら送信
+    - last_sent_dateで重複防止（推奨）
+    """
+    now = datetime.now(JST)
+    today = now.strftime("%Y-%m-%d")
+
+    if not get_status():
+        return {"ok": True, "sent": False, "reason": "off"}
+
+    last = get_last_sent_date()
+    if last == today:
+        return {"ok": True, "sent": False, "reason": "already_sent_today"}
+
+    await post_discord_message("クロス取引開始の時間です！🎉")
+    set_last_sent_date(today)
+    print(f"Reminder sent at {now.isoformat()}")
+    return {"ok": True, "sent": True}
