@@ -62,7 +62,7 @@ def send_reminder():
 # --- スケジューラの設定 ---
 scheduler = BackgroundScheduler()
 # 毎日 18:50 に実行
-scheduler.add_job(send_reminder, 'cron', hour=2, minute=25, timezone='Asia/Tokyo')
+scheduler.add_job(send_reminder, 'cron', hour=18, minute=50, timezone='Asia/Tokyo')
 scheduler.start()
 
 # --- Discord スラッシュコマンド ---
