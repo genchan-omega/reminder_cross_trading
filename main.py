@@ -42,39 +42,27 @@ def set_status(is_on: bool):
         print(f"Supabase Set Error: {e}")
 
 # --- リマインド実行関数 (二重送信防止付き) ---
-
 def send_reminder():
     jst = pytz.timezone('Asia/Tokyo')
-    # 今日の日付を文字列(YYYY-MM-DD)で取得
     today_date = datetime.now(jst).date().isoformat()
     
-    # 状態と最終送信日をチェック
-    info = get_status_info()
-    is_on = info.get("is_on", True)
-    last_sent = info.get("last_sent_at")
-
-    # 条件：リマインド設定がON 且つ 最後に送った日が今日ではない
-    if is_on and last_sent != today_date:
+    # Supabaseの関数を呼び出す
+    # この関数の中で「今日送ったかチェック」と「今日の日付を書き込み」を同時に行う
+    result = supabase.rpc("check_and_lock_reminder", {"today_date": today_date}).execute()
+    
+    # Trueが返ってきた場合のみ、実際に送信する
+    if result.data == True:
         channel = bot.get_channel(CHANNEL_ID)
         if channel:
-            # 非同期でメッセージ送信タスクを投げる
             bot.loop.create_task(channel.send("クロス取引開始の時間です！🎉"))
-            
-            # 送信後、Supabaseの last_sent_at を今日の日付に更新
-            try:
-                supabase.table("bot_status").update({"last_sent_at": today_date}).eq("id", 1).execute()
-                print(f"Reminder sent and database updated: {today_date}")
-            except Exception as e:
-                print(f"Supabase update error: {e}")
+            print(f"Reminder sent and locked via RPC: {today_date}")
     else:
-        # スキップ理由をログに出す（デバッグ用）
-        reason = "OFF設定のため" if not is_on else f"本日({today_date})送信済みのため"
-        print(f"Reminder skipped: {reason}")
+        print(f"Reminder skipped by RPC lock (Already sent or OFF)")
 
 # --- スケジューラの設定 ---
 scheduler = BackgroundScheduler()
 # 毎日 18:50 に実行
-scheduler.add_job(send_reminder, 'cron', hour=1, minute=10, timezone='Asia/Tokyo')
+scheduler.add_job(send_reminder, 'cron', hour=2, minute=25, timezone='Asia/Tokyo')
 scheduler.start()
 
 # --- Discord スラッシュコマンド ---
