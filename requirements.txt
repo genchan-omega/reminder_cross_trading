@@ -4,3 +4,5 @@ discord.py
 apscheduler
 pytz
 supabase
+requests
+beautifulsoup4
